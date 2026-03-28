@@ -8,6 +8,7 @@
 		* { margin: 0; padding: 0; box-sizing: border-box; }
 		body {
 			display: flex;
+			flex-direction: column;
 			align-items: center;
 			justify-content: center;
 			min-height: 100vh;
@@ -27,8 +28,39 @@
 			0% { transform: rotate(0deg); }
 			100% { transform: rotate(360deg); }
 		}
-		.message { font-size: 16px; color: #666; }
+		.message { font-size: 16px; color: #666; margin-bottom: 20px; }
 		.error { color: #f53f3f; }
+
+		/* ===== 调试面板样式 ===== */
+		#debug-panel {
+			width: 90%;
+			max-width: 500px;
+			margin-top: 20px;
+			padding: 15px;
+			background: #fff;
+			border-radius: 10px;
+			box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+			text-align: left;
+			font-size: 13px;
+			color: #333;
+			word-break: break-all;
+		}
+		#debug-panel .debug-title {
+			font-weight: bold;
+			font-size: 14px;
+			margin-bottom: 10px;
+			color: #3370ff;
+		}
+		#debug-panel .debug-item {
+			padding: 6px 0;
+			border-bottom: 1px solid #f0f0f0;
+		}
+		#debug-panel .debug-item:last-child {
+			border-bottom: none;
+		}
+		#debug-panel .debug-ok { color: #00b42a; }
+		#debug-panel .debug-fail { color: #f53f3f; }
+		#debug-panel .debug-wait { color: #ff7d00; }
 	</style>
 </head>
 <body>
@@ -37,27 +69,47 @@
 		<p class="message" id="message">正在处理授权，请稍候...</p>
 	</div>
 
+	<!-- 调试面板：直接在页面上显示每一步的状态 -->
+	<div id="debug-panel">
+		<div class="debug-title">Debug Log</div>
+		<div id="debug-log"></div>
+	</div>
+
 	<!-- 引入 uni-app 的 webview SDK，用于 postMessage -->
 	<script type="text/javascript" src="https://js.cdn.aliyun.dcloud.net/dev/uni-app/uni.webview.1.5.2.js"></script>
 
 	<script>
-		/**
-		 * 飞书授权回调页面
-		 *
-		 * 流程：
-		 * 1. 用户在飞书授权页面点击「授权」
-		 * 2. 飞书重定向到此页面，URL 中携带 code 参数
-		 * 3. 此页面解析 URL 中的 code
-		 * 4. 通过 uni.postMessage 将 code 传递给 App 端
-		 * 5. App 端 web-view 组件的 @message 事件接收到 code
-		 */
+		// ===== 调试工具函数 =====
+		var debugIndex = 0;
+		function debugLog(step, status, detail) {
+			debugIndex++;
+			var logDiv = document.getElementById('debug-log');
+			var item = document.createElement('div');
+			item.className = 'debug-item';
 
-		// 解析 URL 查询参数
+			var statusClass = '';
+			var statusIcon = '';
+			if (status === 'ok') { statusClass = 'debug-ok'; statusIcon = '[OK] '; }
+			else if (status === 'fail') { statusClass = 'debug-fail'; statusIcon = '[FAIL] '; }
+			else { statusClass = 'debug-wait'; statusIcon = '[...] '; }
+
+			item.innerHTML = '<span class="' + statusClass + '">' + statusIcon + '</span>'
+				+ '<strong>#' + debugIndex + ' ' + step + '</strong>'
+				+ (detail ? '<br/>' + detail : '');
+			logDiv.appendChild(item);
+
+			// 同时输出到 console
+			console.log('[Callback #' + debugIndex + '] ' + step, detail || '');
+		}
+
+		// ===== Step 1: 页面加载 =====
+		debugLog('页面已加载', 'ok', 'URL: ' + window.location.href);
+
+		// ===== Step 2: 解析 URL 参数 =====
 		function getQueryParams() {
 			var params = {};
 			var search = window.location.search.substring(1);
 			if (!search) return params;
-
 			var pairs = search.split('&');
 			for (var i = 0; i < pairs.length; i++) {
 				var pair = pairs[i].split('=');
@@ -68,73 +120,134 @@
 			return params;
 		}
 
-		// 等待 uni.webview SDK 加载完成
+		var params = getQueryParams();
+		debugLog('解析 URL 参数', 'ok', JSON.stringify(params));
+
+		var code = params.code;
+		var state = params.state;
+		var error = params.error;
+
+		if (code) {
+			debugLog('拿到 code', 'ok', 'code = ' + code);
+		} else if (error) {
+			debugLog('飞书返回错误', 'fail', 'error = ' + error);
+		} else {
+			debugLog('URL 中没有 code 也没有 error', 'fail', '可能飞书没有正确重定向');
+		}
+
+		// ===== Step 3: 检查 uni 对象 =====
+		debugLog('检查 uni SDK', 'wait', '等待 UniAppJSBridgeReady 事件...');
+
+		// 检查 uni 对象是否已经存在
+		if (typeof uni !== 'undefined') {
+			debugLog('uni 对象已存在', 'ok', 'typeof uni = ' + typeof uni);
+		} else {
+			debugLog('uni 对象尚未加载', 'wait', '等待 SDK 脚本加载...');
+		}
+
+		// ===== Step 4: 等待 Bridge Ready =====
+		var bridgeTimeout = setTimeout(function() {
+			debugLog('UniAppJSBridgeReady 超时', 'fail',
+				'等待超过 5 秒未触发。可能原因：\n'
+				+ '1. 页面不在 uni-app 的 web-view 中打开\n'
+				+ '2. uni.webview SDK 加载失败\n'
+				+ '3. 网络问题导致 CDN 脚本未加载');
+
+			// 检测是否在 uni-app webview 环境
+			if (typeof uni === 'undefined') {
+				debugLog('环境检测', 'fail', 'uni 对象不存在，确认不在 uni-app web-view 环境中');
+			} else {
+				debugLog('环境检测', 'ok', 'uni 对象存在但 Bridge 未 Ready，尝试直接调用...');
+				tryPostMessage();
+			}
+		}, 5000);
+
 		document.addEventListener('UniAppJSBridgeReady', function() {
-			console.log('[Callback] UniAppJSBridgeReady');
+			clearTimeout(bridgeTimeout);
+			debugLog('UniAppJSBridgeReady 触发', 'ok', 'Bridge 已就绪');
+			tryPostMessage();
+		});
 
-			var params = getQueryParams();
-			var code = params.code;
-			var state = params.state;
-			var error = params.error;
-
-			console.log('[Callback] URL params:', JSON.stringify(params));
-
+		// ===== Step 5: 发送 postMessage =====
+		function tryPostMessage() {
 			if (error) {
-				// 授权失败
 				document.getElementById('spinner').style.display = 'none';
 				document.getElementById('message').className = 'message error';
 				document.getElementById('message').textContent = '授权失败: ' + error;
 
-				uni.postMessage({
-					data: {
-						type: 'feishu_auth_error',
-						message: error
-					}
-				});
+				debugLog('发送错误消息给 App', 'wait', '');
+				try {
+					uni.postMessage({
+						data: {
+							type: 'feishu_auth_error',
+							message: error
+						}
+					});
+					debugLog('postMessage(error) 调用成功', 'ok', '');
+				} catch (e) {
+					debugLog('postMessage(error) 调用失败', 'fail', e.message);
+				}
 
+				debugLog('准备 navigateBack', 'wait', '2 秒后返回');
 				setTimeout(function() {
-					uni.navigateBack({ delta: 1 });
+					try {
+						uni.navigateBack({ delta: 1 });
+						debugLog('navigateBack 调用成功', 'ok', '');
+					} catch (e) {
+						debugLog('navigateBack 调用失败', 'fail', e.message);
+					}
 				}, 2000);
 				return;
 			}
 
 			if (code) {
-				// 授权成功，拿到 code
 				document.getElementById('message').textContent = '授权成功，正在登录...';
 
-				console.log('[Callback] 发送 code 给 App:', code);
+				debugLog('发送 code 给 App', 'wait', 'type=feishu_auth_code, code=' + code);
+				try {
+					uni.postMessage({
+						data: {
+							type: 'feishu_auth_code',
+							code: code,
+							state: state || ''
+						}
+					});
+					debugLog('postMessage(code) 调用成功', 'ok', '消息已发送，等待 navigateBack 触发 @message');
+				} catch (e) {
+					debugLog('postMessage(code) 调用失败', 'fail', e.message);
+				}
 
-				// 通过 postMessage 把 code 传递给 App 端
-				uni.postMessage({
-					data: {
-						type: 'feishu_auth_code',
-						code: code,
-						state: state || ''
-					}
-				});
-
-				// 触发返回，此时 @message 事件会被触发
+				debugLog('准备 navigateBack', 'wait', '1 秒后返回');
 				setTimeout(function() {
-					uni.navigateBack({ delta: 1 });
-				}, 500);
+					try {
+						uni.navigateBack({ delta: 1 });
+						debugLog('navigateBack 调用成功', 'ok', '');
+					} catch (e) {
+						debugLog('navigateBack 调用失败', 'fail', e.message);
+					}
+				}, 1000);
 			} else {
-				// 没有 code 也没有 error
 				document.getElementById('spinner').style.display = 'none';
 				document.getElementById('message').className = 'message error';
 				document.getElementById('message').textContent = '未获取到授权信息，请重试';
 
-				uni.postMessage({
-					data: {
-						type: 'feishu_auth_error',
-						message: '未获取到授权码'
-					}
-				});
+				debugLog('无 code 无 error', 'fail', '无法继续');
+				try {
+					uni.postMessage({
+						data: {
+							type: 'feishu_auth_error',
+							message: '未获取到授权码'
+						}
+					});
+				} catch (e) {
+					debugLog('postMessage 调用失败', 'fail', e.message);
+				}
 
 				setTimeout(function() {
-					uni.navigateBack({ delta: 1 });
+					try { uni.navigateBack({ delta: 1 }); } catch (e) {}
 				}, 2000);
 			}
-		});
+		}
 	</script>
 </body>
 </html>
